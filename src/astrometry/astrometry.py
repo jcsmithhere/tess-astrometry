@@ -282,14 +282,27 @@ class Centroids:
         cols = np.array(cols).flatten() * u.pixel
         rows = np.array(rows).flatten() * u.pixel
 
-        # Subtract off the extra 0.5 so that the centroid is plotted properly on a pixel grid in matplotlib
-        if image_ref:
-            cols -= 0.5*u.pixel
-            rows -= 0.5*u.pixel
+      # # Subtract off the extra 0.5 so that the centroid is plotted properly on a pixel grid in matplotlib
+      # if image_ref:
+      #     cols -= 0.5*u.pixel
+      #     rows -= 0.5*u.pixel
+
+      # if np.any(np.in1d([1,2], int(np.median(self.mtpf.ccd)))):
+      #     # For CCDs 1 and 2
+      #     cols += 1.5*u.pixel
+      #     rows += 0.5*u.pixel
+      # elif np.any(np.in1d([3,4], int(np.median(self.mtpf.ccd)))):
+      #     # For CCDs 3 and 4
+      #     cols -= 0.5*u.pixel
+      #     rows += 0.5*u.pixel
+        
         
         if CCD_ref:
-            cols += self.mtpf.hdu[1].data['CORNER_COLUMN'][self.mtpf.quality_mask]*u.pixel
-            rows += self.mtpf.hdu[1].data['CORNER_ROW'][self.mtpf.quality_mask]*u.pixel
+            # Fix off-by-one error
+            cols += self.mtpf.hdu[1].data['CORNER_COLUMN'][self.mtpf.quality_mask]*u.pixel + 1.0*u.pixel
+            rows += self.mtpf.hdu[1].data['CORNER_ROW'][self.mtpf.quality_mask]*u.pixel + 1.0*u.pixel
+          # cols += self.mtpf.hdu[1].data['CORNER_COLUMN'][self.mtpf.quality_mask]*u.pixel
+          # rows += self.mtpf.hdu[1].data['CORNER_ROW'][self.mtpf.quality_mask]*u.pixel
             pass
         
         self.col = cols
@@ -531,7 +544,7 @@ class Centroids:
     
 
     #*************************************************************************************************************
-    def detrend_centroids_expected_trend(self, include_DVA=True, extra_title=""):
+    def detrend_centroids_expected_trend(self, include_DVA=True, extra_title="", plot=False):
         """ Detrends the centroids using the given expected trends
 
         Parameters
@@ -549,58 +562,63 @@ class Centroids:
         rowExpRemoved = _remove_expected_trend_elemental(self.row, self.expected_row)
         colExpRemoved = _remove_expected_trend_elemental(self.col, self.expected_col)
  
-        # Now print the results
-        fig,ax = plt.subplots(1,1, figsize=(12, 10))
- 
-        # Initial and expected centroids
-        ax = plt.subplot(3,1,1)
-        ax.plot(self.mtpf.time.value, self.col, '*b', label='Column Centroids')
-        ax.plot(self.mtpf.time.value, self.expected_col, '-m', label='Column Expected')
-        ax.plot(self.mtpf.time.value, self.row, '*c', label='Row Centroids')
-        ax.plot(self.mtpf.time.value, self.expected_row, '-m', label='Row Expected')
-        plt.legend()
-        plt.title(extra_title + 'Raw Centroids and JPL Horozons Expected')
-        plt.grid()
- 
-      # # Removing the moded motion
-      # ax = plt.subplot(4,1,2)
-      # ax.plot(mtpf.time.value, colExpRemoved, '*b', label='Column Centroids')
-      # ax.plot(mtpf.time.value, colFittedTrend + np.nanmean(colExpRemoved), '-m', label='Column Fitted Modded Trend')
-      # ax.plot(mtpf.time.value, rowExpRemoved, '*c', label='Row Centroids')
-      # ax.plot(mtpf.time.value, rowFittedTrend + np.nanmean(rowExpRemoved), '-m', label='Row Fitted Moded Trend')
-      # plt.legend()
-      # plt.title('With Expected Removed')
-      # plt.grid()
- 
-        # Final Residual
-        ax = plt.subplot(3,1,2)
-        madstd = lambda x: 1.4826*median_absolute_deviation(x, nan_policy='omit')
-        ax.plot(self.mtpf.time.value, colExpRemoved, '*b', label='Column Residual; madstd={:.3f}'.format(madstd(colExpRemoved)))
-        ax.plot(self.mtpf.time.value, rowExpRemoved, '*c', label='Row Residual; madstd={:.3f}'.format(madstd(colExpRemoved)))
-        # Set plot limits to ignore excursions
-        allYData = np.concatenate((colExpRemoved, rowExpRemoved))
-        yUpper = np.nanpercentile(allYData, 99.5)
-        yLower = np.nanpercentile(allYData, 0.5)
-        ax.set_ylim(yLower, yUpper)
-        plt.legend()
-        plt.title('Final Residual')
-        plt.grid()
- 
-        # Periodigram
-        ax = plt.subplot(3,1,3)
-        col_lc = lk.LightCurve(time=self.mtpf.time, flux=colExpRemoved)
-        row_lc = lk.LightCurve(time=self.mtpf.time, flux=rowExpRemoved)
-        col_pg = col_lc.to_periodogram()
-        row_pg = row_lc.to_periodogram()
-        col_pg.plot(ax=ax, view='period', scale='log', label='Column', c='b')
-        row_pg.plot(ax=ax, view='period', scale='log', label='Row', c='c')
-        ax.grid()
-        ax.set_title('Periodram of Residual Motion')
+        if plot:
+
+            # Now print the results
+            fig,ax = plt.subplots(1,1, figsize=(12, 10))
+        
+            # Initial and expected centroids
+            ax = plt.subplot(2,1,1)
+            ax.plot(self.mtpf.time.value, self.col, '*b', label='Column Centroids')
+            ax.plot(self.mtpf.time.value, self.expected_col, '-m', label='Column Expected')
+            ax.plot(self.mtpf.time.value, self.row, '*c', label='Row Centroids')
+            ax.plot(self.mtpf.time.value, self.expected_row, '-m', label='Row Expected')
+            plt.legend()
+            plt.title(extra_title + 'Measured Astrometry vs. JPL Horizons Expected')
+            plt.grid()
+        
+          # # Removing the moded motion
+          # ax = plt.subplot(4,1,2)
+          # ax.plot(mtpf.time.value, colExpRemoved, '*b', label='Column Centroids')
+          # ax.plot(mtpf.time.value, colFittedTrend + np.nanmean(colExpRemoved), '-m', label='Column Fitted Modded Trend')
+          # ax.plot(mtpf.time.value, rowExpRemoved, '*c', label='Row Centroids')
+          # ax.plot(mtpf.time.value, rowFittedTrend + np.nanmean(rowExpRemoved), '-m', label='Row Fitted Moded Trend')
+          # plt.legend()
+          # plt.title('With Expected Removed')
+          # plt.grid()
+        
+            # Final Residual
+            ax = plt.subplot(2,1,2)
+            madstd = lambda x: 1.4826*median_absolute_deviation(x, nan_policy='omit')
+            ax.plot(self.mtpf.time.value, colExpRemoved, '*b', label='Column Residual; madstd={:.3f}'.format(madstd(colExpRemoved)))
+            ax.plot(self.mtpf.time.value, rowExpRemoved, '*c', label='Row Residual; madstd={:.3f}'.format(madstd(colExpRemoved)))
+            # Set plot limits to ignore excursions
+            allYData = np.concatenate((colExpRemoved, rowExpRemoved))
+          # yUpper = np.nanpercentile(allYData, 99.5)
+          # yLower = np.nanpercentile(allYData, 0.5)
+            yUpper = np.nanpercentile(allYData, 99.0)
+            yLower = np.nanpercentile(allYData, 1.0)
+            ax.set_ylim(yLower, yUpper)
+            ax.set_ylim(-1.0, 1.0)
+            plt.legend()
+            plt.title('Final Residual')
+            plt.grid()
+        
+          # # Periodigram
+          # ax = plt.subplot(3,1,3)
+          # col_lc = lk.LightCurve(time=self.mtpf.time, flux=colExpRemoved)
+          # row_lc = lk.LightCurve(time=self.mtpf.time, flux=rowExpRemoved)
+          # col_pg = col_lc.to_periodogram()
+          # row_pg = row_lc.to_periodogram()
+          # col_pg.plot(ax=ax, view='period', scale='log', label='Column', c='b')
+          # row_pg.plot(ax=ax, view='period', scale='log', label='Row', c='c')
+          # ax.grid()
+          # ax.set_title('Periodram of Residual Motion')
 
         return colExpRemoved, rowExpRemoved
 
     #*************************************************************************************************************
-    def compare_JPL_to_computed_centroids(self, raDec2PixDataPath=None, plot_figure=False):
+    def compare_JPL_to_computed_centroids(self, raDec2PixDataPath=None, plot_figure=False, include_DVA=True):
         """ Compares the JPL Horizons expected astrometry to that computed by the centroiding and SPOC's raDec2Pix
 
         Parameters
@@ -611,6 +629,8 @@ class Centroids:
             If None then checks to see if the data is already loaded, if not then raises an exception
         plot_figure : bool
             If True then display figure
+        include_DVA : bool
+            If True then use includes the DVA term when computing the expected trend
 
         Returns
         -------
@@ -654,7 +674,7 @@ class Centroids:
 
         # Load the JPL Horizons expected data if not already loaded
         if self.expected_ra is None or self.expected_dec is None:
-            self.download_expected_motion(aberrate=True)
+            self.download_expected_motion(aberrate=include_DVA)
             
 
         madstd = lambda x: 1.4826*median_abs_deviation(x, nan_policy='omit')
@@ -1160,6 +1180,7 @@ class MovingTargetPixelFile(TessTargetPixelFile):
             Column in TPF to plot
         centroid : float np.array(nCadences,2)
             Centroid data to plot overlaid on the pixel data
+            Be sure to plot relative pixels (CCD_ref=False)
         aperture_mask : ndarray(nCadences, cols, rows)
             Highlight pixels selected by aperture_mask.
         save_file : str
@@ -1209,6 +1230,9 @@ class MovingTargetPixelFile(TessTargetPixelFile):
         def animate(i):
             frame = i * step
             ax.images[0].set_data(self.hdu[1].data[column][self.quality_mask][frame])
+            # Rescale the color range for each frame
+            ax.images[0].set_clim(np.min(self.hdu[1].data[column][self.quality_mask][frame]), 
+                    np.max(self.hdu[1].data[column][self.quality_mask][frame]))
             if centroid is not None:
                 sct.set_offsets(np.array([centroid[frame, 0], centroid[frame, 1]]))
             if aperture_mask is not None:
@@ -1279,7 +1303,8 @@ class MovingTargetPixelFile(TessTargetPixelFile):
         """Compute the "center of mass" of the light based on the 2D moments;
         this is a helper method for `estimate_centroids_one_cadence()`."""
         aperture_mask = self._parse_aperture_mask(aperture_mask)
-        yy, xx = np.indices(self.shape[1:]) + 0.5
+      # yy, xx = np.indices(self.shape[1:]) + 0.5
+        yy, xx = np.indices(self.shape[1:])
         yy = self.row + yy
         xx = self.column + xx
         cadence_idx = np.nonzero(np.in1d(self.cadenceno, cadenceno))[0]
@@ -1304,10 +1329,12 @@ class MovingTargetPixelFile(TessTargetPixelFile):
         col, row = centroid_quadratic(self.flux[cadence_idx], mask=aperture_mask)
         col_centr.append(col)
         row_centr.append(row)
-        # Finally, we add .5 to the result bellow because the convention is that
-        # pixels are centered at .5, 1.5, 2.5, ...
-        col_centr = np.asfarray(col_centr) + self.column + 0.5
-        row_centr = np.asfarray(row_centr) + self.row + 0.5
+      # # Finally, we add .5 to the result bellow because the convention is that
+      # # pixels are centered at .5, 1.5, 2.5, ...
+      # col_centr = np.asfarray(col_centr) + self.column + 0.5
+      # row_centr = np.asfarray(row_centr) + self.row + 0.5
+        col_centr = np.asfarray(col_centr) + self.column
+        row_centr = np.asfarray(row_centr) + self.row
         col_centr = Quantity(col_centr, unit="pixel")
         row_centr = Quantity(row_centr, unit="pixel")
         return col_centr, row_centr
