@@ -298,12 +298,16 @@ class Centroids:
         
         
         if CCD_ref:
-            # Fix off-by-one error
-            cols += self.mtpf.hdu[1].data['CORNER_COLUMN'][self.mtpf.quality_mask]*u.pixel + 1.0*u.pixel
-            rows += self.mtpf.hdu[1].data['CORNER_ROW'][self.mtpf.quality_mask]*u.pixel + 1.0*u.pixel
+          # # Fix off-by-one error
+          # cols += self.mtpf.hdu[1].data['CORNER_COLUMN'][self.mtpf.quality_mask]*u.pixel + 1.0*u.pixel
+          # rows += self.mtpf.hdu[1].data['CORNER_ROW'][self.mtpf.quality_mask]*u.pixel + 1.0*u.pixel
+
           # cols += self.mtpf.hdu[1].data['CORNER_COLUMN'][self.mtpf.quality_mask]*u.pixel
           # rows += self.mtpf.hdu[1].data['CORNER_ROW'][self.mtpf.quality_mask]*u.pixel
-            pass
+
+            # Test mtpf.row and mtpf.column being the first cadence absolute pixel reference
+            cols += (self.mtpf.hdu[1].data['CORNER_COLUMN'][self.mtpf.quality_mask]  - self.mtpf.column) * u.pixel
+            rows += (self.mtpf.hdu[1].data['CORNER_ROW'][self.mtpf.quality_mask]     - self.mtpf.row) * u.pixel
         
         self.col = cols
         self.row = rows
@@ -544,7 +548,7 @@ class Centroids:
     
 
     #*************************************************************************************************************
-    def detrend_centroids_expected_trend(self, include_DVA=True, extra_title="", plot=False):
+    def detrend_centroids_expected_trend(self, include_DVA=False, extra_title="", plot=False):
         """ Detrends the centroids using the given expected trends
 
         Parameters
@@ -591,7 +595,7 @@ class Centroids:
             ax = plt.subplot(2,1,2)
             madstd = lambda x: 1.4826*median_absolute_deviation(x, nan_policy='omit')
             ax.plot(self.mtpf.time.value, colExpRemoved, '*b', label='Column Residual; madstd={:.3f}'.format(madstd(colExpRemoved)))
-            ax.plot(self.mtpf.time.value, rowExpRemoved, '*c', label='Row Residual; madstd={:.3f}'.format(madstd(colExpRemoved)))
+            ax.plot(self.mtpf.time.value, rowExpRemoved, '*c', label='Row Residual; madstd={:.3f}'.format(madstd(rowExpRemoved)))
             # Set plot limits to ignore excursions
             allYData = np.concatenate((colExpRemoved, rowExpRemoved))
           # yUpper = np.nanpercentile(allYData, 99.5)
@@ -599,7 +603,7 @@ class Centroids:
             yUpper = np.nanpercentile(allYData, 99.0)
             yLower = np.nanpercentile(allYData, 1.0)
             ax.set_ylim(yLower, yUpper)
-            ax.set_ylim(-1.0, 1.0)
+          # ax.set_ylim(-1.0, 1.0)
             plt.legend()
             plt.title('Final Residual')
             plt.grid()
