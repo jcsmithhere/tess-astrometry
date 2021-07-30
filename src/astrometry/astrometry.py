@@ -3,15 +3,10 @@
 import warnings
 from lightkurve.targetpixelfile import TessTargetPixelFile
 import lightkurve as lk
-from lightkurve.utils import validate_method
-import matplotlib
 import matplotlib.pyplot as plt
-from matplotlib import patches
 import numpy as np
 import astropy.units as u
-from scipy.stats import median_absolute_deviation
 from scipy.interpolate import PchipInterpolator
-from scipy.ndimage import label
 from astropy.io import fits
 from tqdm import tqdm
 import csv
@@ -21,11 +16,14 @@ from scipy.stats import median_abs_deviation
 import os
 import glob
 import pandas as pd
+from matplotlib import patches, animation
 #import multiprocessing as mp
+
+from MovingTargetPixelFile import MovingTargetPixelFile
 
 
 #*************************************************************************************************************
-class Centroids:
+class MovingCentroids:
     """ Object to store computed centroid information
 
     Atributes
@@ -66,7 +64,7 @@ class Centroids:
 
     #*************************************************************************************************************
     def __init__(self, mtpf):
-        """ Generate the Centroids object. 
+        """ Generate the MovingCentroids object. 
         
         Compute the centrouds using one of the centroiding methods.
 
@@ -102,76 +100,56 @@ class Centroids:
 
     @property
     def instrument_time(self):
-        """ The time given by the mtpf"""
+        """ The instrument time given by the mtpf"""
 
         return self.mtpf.instrument_time
 
     #*************************************************************************************************************
-    def old__init__(self, timestamps, col=None, row=None, ra=None, dec=None):
-        """ Creates a Centroids object
-
-        Either col/row or ra/dec can be passed but not both
-        """
-
-        if col is not None or row is not None:
-            assert col is not None and row is not None, 'Both row and column must be passed or neither'
-            assert ra is None and dec is None, 'Must pass either row/col or ra/dec, not both'
-            self.colRowData = True
-            self.raDecData = False
-        elif ra is not None or dec is not None:
-            assert ra is not None and dec is not None, 'Both ra and dec must be passed or neither'
-            assert col is None and row is None, 'Must pass either row/col or ra/dec, not both'
-            self.colRowData = False
-            self.raDecData = True
-        else:
-            raise Exception('Must pass either row/col or ra/dec, and not both')
-
-        self.timestamps = timestamps
-
-        self.row    = np.array(row)
-        self.col    = np.array(col)
-
-        self.ra     = np.array(ra)
-        self.dec    = np.array(dec)
-
-    #*************************************************************************************************************
-    def download_expected_motion(self, aberrate : bool = False):
+    def download_expected_motion(self, aberrate : bool = False, use_mtpf_stored : bool = False):
         """ Downloads the expected motion in R.A. and decl. using tess-ephem, which uses JPL Horizons
 
-        NOTE: By default tess-ephem will perform the approximate DVA correction. This will disable that correction to
-        get the true predicted sky coordinates.
-        HOWEVER, the RA and Decl. returned by ephem are the true coords, not corrected for R.A. and Decl.
+        NOTE: By default tess-ephem will perform the approximate DVA correction when returning the column and row
+        coordinates. The <aberrate> argument will enable or disable this DVA correction.
+        The RA and Decl. returned by ephem are the true coords, irrespective of the <aberrate> value.
+
+        Parameters
+        ----------
+        aberrate : bool
+            If true then apply the approximate DVA correction for the returned row and column
+        use_mtpf_stored : bool
+            The ecpected astrometry is stored in the mtpf, just return that instead.
+            Note that this only includes the row and column data
 
         """
 
-        # Download the JPL Horizons data at the data cadence times
-      # print('Downloading Expected R.A. and decl. from JPL Horizons...')
-        df = ephem(self.mtpf.targetid, time=self.time, interpolation_step='2m', verbose=True, aberrate=aberrate)
+        if use_mtpf_stored:
+            self.expected_row = self.mtpf.hdu[1].data['TARGET_ROW'][self.mtpf.quality_mask]
+            self.expected_col = self.mtpf.hdu[1].data['TARGET_COLUMN'][self.mtpf.quality_mask]
 
-        # pad invalid times with NaN
-        # Find missing times
-        dfTimeArray = [t.value for t in df.index]
-      # missingTimes = np.nonzero(~np.in1d(self.time.value, dfTimeArray))[0]
-      # # Fill with Nan
-      # df.loc[len(df.index)] = ['Amy', 89, 93] 
+            # These are not available in the mtpf
+            self.expected_ra = np.full(len(self.time), np.nan)
+            self.expected_dec = np.full(len(self.time), np.nan)
 
-        presentTimes = np.nonzero(np.in1d(self.time.value, dfTimeArray))[0]
-        self.expected_ra = np.full(len(self.time), np.nan)
-        self.expected_ra[presentTimes] = df.ra.values
-        self.expected_dec = np.full(len(self.time), np.nan)
-        self.expected_dec[presentTimes] = df.dec.values
-
-        self.expected_row = np.full(len(self.time), np.nan)
-        self.expected_row[presentTimes] = df.row.values
-        self.expected_col = np.full(len(self.time), np.nan)
-        self.expected_col[presentTimes] = df.column.values
-
-      # self.expected_ra    = df.ra.values
-      # self.expected_dec   = df.dec.values
-
+        else:
+            # Download the JPL Horizons data at the data cadence times
+          # print('Downloading Expected R.A. and decl. from JPL Horizons...')
+            df = ephem(self.mtpf.targetid, time=self.time, interpolation_step='2m', verbose=True, aberrate=aberrate)
+         
+            # Pad invalid times with NaN
+            dfTimeArray = [t.value for t in df.index]
+            presentTimes = np.nonzero(np.in1d(self.time.value, dfTimeArray))[0]
+            self.expected_ra = np.full(len(self.time), np.nan)
+            self.expected_ra[presentTimes] = df.ra.values
+            self.expected_dec = np.full(len(self.time), np.nan)
+            self.expected_dec[presentTimes] = df.dec.values
+         
+            self.expected_row = np.full(len(self.time), np.nan)
+            self.expected_row[presentTimes] = df.row.values
+            self.expected_col = np.full(len(self.time), np.nan)
+            self.expected_col[presentTimes] = df.column.values
 
     #*************************************************************************************************************
-    def compute_centroids_simple_aperture(self, method='moments', CCD_ref=True, image_ref=False, aper_mask_threshold=3.0):
+    def compute_centroids_simple_aperture(self, method='moments', CCD_ref=True, aper_mask_threshold=3.0):
         """ Computes the centroid of a moving target pixel file using a simple static aperture
         
         Parameters
@@ -180,18 +158,20 @@ class Centroids:
                 The centroiding method to use: 'moments' 'quadratic'
         CCD_ref : bool
                 If True then add in the mtpf CORNER_COLUMN and CORNER_ROW to get the CCD reference pixel coordinates
-        image_ref: bool
-                If True then subtract off 0.5 so that the pixel center is at 0.0 
-                This aids when superimposing on the pixel grid with matplot lib
-                (The TESS convenction is the center is at 0.5)
         aper_mask_threshold : float
             A value for the number of sigma by which a pixel needs to be
             brighter than the median flux to be included in the aperture mask.
         
         Returns
         -------
-        centroids : astrometry.Centroids class
-            The computed centroids
+        centroidsMatrix : float np.array(nCadences,2)
+            Centroid data relative to mask for use with self.mtpf.animate method
+
+        And also modifies these class attributes:
+        self.row : array of row centroids
+        self.col : array of column centroids
+        self.colRowDataAvailable = True
+
         
         """
         
@@ -201,30 +181,26 @@ class Centroids:
             median_image = np.array(np.nanmedian(self.mtpf.flux, axis=0))
         vals = median_image[np.isfinite(median_image)].flatten()
         # Calculate the theshold value in flux units
-        mad_cut = (1.4826 * median_absolute_deviation(vals) * aper_mask_threshold) + np.nanmedian(median_image)
+        mad_cut = (1.4826 * median_abs_deviation(vals) * aper_mask_threshold) + np.nanmedian(median_image)
         # Create a mask containing the pixels above the threshold flux
         aper = np.nan_to_num(median_image) >= mad_cut
         cols, rows = self.mtpf.estimate_centroids(method=method, aperture_mask=aper)
         
-        # Subtract off the extra 0.5 so that the centroid is plotted properly on a pixel grid in matplotlib
-        if image_ref:
-            cols -= 0.5*u.pixel
-            rows -= 0.5*u.pixel
-        
+        centroidsMatrix = np.transpose([cols, rows])
+
         if CCD_ref:
-            cols += self.mtpf.hdu[1].data['CORNER_COLUMN'][self.mtpf.quality_mask]*u.pixel
-            rows += self.mtpf.hdu[1].data['CORNER_ROW'][self.mtpf.quality_mask]*u.pixel
-            pass
+            cols += self.mtpf.corner_column * u.pixel
+            rows += self.mtpf.corner_row * u.pixel
         
         self.col = cols
         self.row = rows
 
         self.colRowDataAvailable = True
         
-        return
+        return centroidsMatrix
 
     #*************************************************************************************************************
-    def compute_centroids_dynamic_aperture(self, method='moments', CCD_ref=True, image_ref=False,
+    def compute_centroids_dynamic_aperture(self, method='moments', CCD_ref=True,
             aper_mask_threshold=3.0, n_cores=None):
         """ Compute the centroid of a moving target pixel file using a dynamic aperture.
         
@@ -239,18 +215,24 @@ class Centroids:
                 The centroiding method to use: 'moments' 'quadratic'
         CCD_ref : bool
                 If True then add in the mtpf CORNER_COLUMN and CORNER_ROW to get the CCD reference pixel coordinates
-        image_ref: bool
-                If True then subtract off 0.5 so that the pixel center is at 0.0 
-                This aids when superimposing on the pixel grid with matplot lib
-                (The TESS convenction is the center is at 0.5)
         aper_mask_threshold : float
             A value for the number of sigma by which a pixel needs to be
             brighter than the median flux to be included in the aperture mask.
         n_cores : int
             Number of multiprocessing cores to use. None means use all.
+
+        Returns
+        -------
+        centroidsMatrix : float np.array(nCadences,2)
+            Centroid data relative to mask for use with self.mtpf.animate method
+
+        And also modifies these class attributes:
+        self.row : array of row centroids
+        self.col : array of column centroids
+        self.colRowDataAvailable = True
+
         """
 
-        # Compute the aperture for each cadence seperately
         cols = []
         rows = []
         self.aper = np.full(self.mtpf.shape, np.nan)
@@ -272,6 +254,8 @@ class Centroids:
       # #***
         
 
+        # Compute the aperture for each cadence seperately
+        # TODO: This is ripe for parallelization. Figure out how to do that within a class object
         for idx,cadenceno in enumerate(self.mtpf.cadenceno):
             self.aper[idx,:,:] = self.mtpf.create_threshold_mask_one_cadence(cadenceno, threshold=aper_mask_threshold)
             col, row = self.mtpf.estimate_centroids_one_cadence(cadenceno, method=method,
@@ -282,41 +266,18 @@ class Centroids:
         cols = np.array(cols).flatten() * u.pixel
         rows = np.array(rows).flatten() * u.pixel
 
-      # # Subtract off the extra 0.5 so that the centroid is plotted properly on a pixel grid in matplotlib
-      # if image_ref:
-      #     cols -= 0.5*u.pixel
-      #     rows -= 0.5*u.pixel
+        centroidsMatrix = np.transpose([cols, rows])
 
-      # if np.any(np.in1d([1,2], int(np.median(self.mtpf.ccd)))):
-      #     # For CCDs 1 and 2
-      #     cols += 1.5*u.pixel
-      #     rows += 0.5*u.pixel
-      # elif np.any(np.in1d([3,4], int(np.median(self.mtpf.ccd)))):
-      #     # For CCDs 3 and 4
-      #     cols -= 0.5*u.pixel
-      #     rows += 0.5*u.pixel
-        
-        
         if CCD_ref:
-          # # Fix off-by-one error
-          # cols += self.mtpf.hdu[1].data['CORNER_COLUMN'][self.mtpf.quality_mask]*u.pixel + 1.0*u.pixel
-          # rows += self.mtpf.hdu[1].data['CORNER_ROW'][self.mtpf.quality_mask]*u.pixel + 1.0*u.pixel
-
-          # cols += self.mtpf.hdu[1].data['CORNER_COLUMN'][self.mtpf.quality_mask]*u.pixel
-          # rows += self.mtpf.hdu[1].data['CORNER_ROW'][self.mtpf.quality_mask]*u.pixel
-
-            # Test mtpf.row and mtpf.column being the first cadence absolute pixel reference
-            cols += (self.mtpf.hdu[1].data['CORNER_COLUMN'][self.mtpf.quality_mask]  - self.mtpf.column) * u.pixel
-            rows += (self.mtpf.hdu[1].data['CORNER_ROW'][self.mtpf.quality_mask]     - self.mtpf.row) * u.pixel
+            cols += self.mtpf.corner_column * u.pixel
+            rows += self.mtpf.corner_row * u.pixel
         
         self.col = cols
         self.row = rows
 
         self.colRowDataAvailable = True
         
-        return
-
-    
+        return centroidsMatrix
         
     #*************************************************************************************************************
     def write_to_csv(self, data='col_row', filename=None):
@@ -369,7 +330,7 @@ class Centroids:
         data : str
             What centroid data to read and store
             Options:
-                'raDec2Pix_ra_dec': The ra and dec xomputed by the SPOC raDec2Pix class
+                'raDec2Pix_ra_dec': The ra and dec computed by the SPOC raDec2Pix class
         filename : str
             Name of file to read from
 
@@ -379,6 +340,8 @@ class Centroids:
             self.raDec2Pix_ra 
             self.raDec2Pix_dec 
         """
+
+        assert data=='raDec2Pix_ra_dec', 'data=raDec2Pix_ra_dec is the only current option'
 
         assert filename is not None, 'filename must be passed'
 
@@ -397,19 +360,21 @@ class Centroids:
                 else:
                     raise Exception ('The only data option is "raDec2Pix_ra_dec"');
 
+        self.raDecDataAvailable = True
+
 
     #*************************************************************************************************************
     def detrend_centroids_via_poly (self, polyorderRange=[1,8], sigmaThreshold=5.0, remove_expected=False,
-            fig=None, plot=False):
-        """ Detrends any trends in the centroid motion via peicewise polynomial fitting.
+            include_DVA=False, fig=None, plot=False):
+        """ Detrends any trends in the centroid motion via piecewise polynomial fitting.
  
-        This function will optionally first remove the JPL Horizona expected centroids if requested.
+        This function will optionally first remove the JPL Horizons expected centroids if requested.
  
         Then it will identify discontinuities (i.e. orbit boundaries) or any other spurious regions. It will
         then chunk the data around discontinuities and gap the spurious regions. It will then fit the curves to a dynamic order
         polynomial, where the optimal polyorder is chosen based on RMSE.
  
-        This function will work on either row/col centroids or ra/dec centroids.
+        This function will work on either row/col centroids or ra/dec centroids depending on what data is available.
  
         Parameters
         ----------
@@ -417,6 +382,14 @@ class Centroids:
             The upper and lower polyorders to try
         sigmaThreshold : float
             The sigma threshold for finding segments
+        remove_expected : bool
+            If True then first subtract off the JPL Horizons expected astrometry
+        include_DVA : bool
+            If True then use includes the DVA term when computing the JPL Horizons expected trend
+        fig : figure handle
+            If passed (and plot==True) then plot on this figure
+        plot : bool
+            If True then generate plot
  
         Returns
         -------
@@ -429,23 +402,22 @@ class Centroids:
         #***
         # First remove the JPL Horizons expected centroids, if requested
         if remove_expected:
-            col_exp = self.mtpf.hdu[1].data['TARGET_COLUMN'][self.mtpf.quality_mask]
-            row_exp = self.mtpf.hdu[1].data['TARGET_ROW'][self.mtpf.quality_mask]
-            self.col -= col_exp
-            self.row -= row_exp
- 
-          # test = remove_expected_trend_elemental(centroids.row, row_exp)
-          # test = remove_expected_trend_elemental(centroids.col, col_exp)
+            self.download_expected_motion(aberrate=include_DVA)
+            rowExpRemoved = _remove_expected_trend_elemental(self.row, self.expected_row)
+            colExpRemoved = _remove_expected_trend_elemental(self.col, self.expected_col)
+            self.col -= colExpRemoved 
+            self.row -= rowExpRemoved 
  
         #***
-        # Peicewise polynomial fit
+        # Piecewise polynomial fit
         if self.colRowDataAvailable:
             detrended_col_centroids, col_polyFitCurve, col_break_point = _detrend_centroids_elemental(self.col, self.mtpf.time,
                     self.mtpf.cadenceno, polyorderRange, sigmaThreshold=sigmaThreshold)
             detrended_row_centroids, row_polyFitCurve, row_break_point = _detrend_centroids_elemental(self.row, self.mtpf.time,
                     self.mtpf.cadenceno, polyorderRange, sigmaThreshold=sigmaThreshold)
             
-        elif self.raDecData:
+        elif self.raDecDataAvailable:
+            raise Exception('This option has not been maintained')
             detrended_ra_centroids, ra_polyFitCurve, ra_break_point = _detrend_centroids_elemental(centroids.ra, mtpf.time,
                     mtpf.cadenceno, polyorderRange, sigmaThreshold=sigmaThreshold)
             detrended_dec_centroids, dec_polyFitCurve, dec_break_point = _detrend_centroids_elemental(centroids.dec, mtpf.time,
@@ -472,7 +444,7 @@ class Centroids:
                 ax.plot(self.mtpf.time.value, row_polyFitCurve, '-m', label='Row PolyFit')
                 minVal = np.nanmin([self.col, self.row])
                 maxVal = np.nanmax([self.col, self.row])
-            elif centroids.raDecData:
+            elif centroids.raDecDataAvailable:
                 ax.plot(mtpf.time.value, centroids.ra, '*b', label='R.A. Centroids')
                 ax.plot(mtpf.time.value[ra_break_point], centroids.ra[ra_break_point], '*r', markersize=10, label='R.A. Breakpoints')
                 ax.plot(mtpf.time.value, ra_polyFitCurve, '-m', label='R.A. PolyFit')
@@ -497,7 +469,7 @@ class Centroids:
             if self.colRowDataAvailable:
                 col = detrended_col_centroids
                 row = detrended_row_centroids
-                madstd = lambda x: 1.4826*median_absolute_deviation(x, nan_policy='omit')
+                madstd = lambda x: 1.4826*median_abs_deviation(x, nan_policy='omit')
                 ax.plot(self.mtpf.time.value, col, '*-b', label='Column Residual; madstd={:.3f}'.format(madstd(col)))
                 ax.plot(self.mtpf.time.value, row, '*-c', label='Row Residual; madstd={:.3f}'.format(madstd(row)))
                 ax.set_ylabel('Pixels')
@@ -549,20 +521,20 @@ class Centroids:
 
     #*************************************************************************************************************
     def detrend_centroids_expected_trend(self, include_DVA=False, extra_title="", plot=False):
-        """ Detrends the centroids using the given expected trends
+        """ Detrends the centroids using the given the JPL Horizons expected trends
 
         Parameters
         ----------
         include_DVA : bool
-            If True then use includes the DVA term when computing the expected trend
+            If True then use includes the DVA term when computing the JPL Horizons expected trend
+        extra_title : str
+            Extra title to prepend to figure title
+        plot : bool
+            If True then generate plot
         """
  
-        # The JPL Horizons expected locations
-      # col_exp = self.mtpf.hdu[1].data['TARGET_COLUMN'][self.mtpf.quality_mask]
-      # row_exp = self.mtpf.hdu[1].data['TARGET_ROW'][self.mtpf.quality_mask]
+        # The JPL Horizons expected astrometry
         self.download_expected_motion(aberrate=include_DVA)
-
- 
         rowExpRemoved = _remove_expected_trend_elemental(self.row, self.expected_row)
         colExpRemoved = _remove_expected_trend_elemental(self.col, self.expected_col)
  
@@ -581,19 +553,9 @@ class Centroids:
             plt.title(extra_title + 'Measured Astrometry vs. JPL Horizons Expected')
             plt.grid()
         
-          # # Removing the moded motion
-          # ax = plt.subplot(4,1,2)
-          # ax.plot(mtpf.time.value, colExpRemoved, '*b', label='Column Centroids')
-          # ax.plot(mtpf.time.value, colFittedTrend + np.nanmean(colExpRemoved), '-m', label='Column Fitted Modded Trend')
-          # ax.plot(mtpf.time.value, rowExpRemoved, '*c', label='Row Centroids')
-          # ax.plot(mtpf.time.value, rowFittedTrend + np.nanmean(rowExpRemoved), '-m', label='Row Fitted Moded Trend')
-          # plt.legend()
-          # plt.title('With Expected Removed')
-          # plt.grid()
-        
             # Final Residual
             ax = plt.subplot(2,1,2)
-            madstd = lambda x: 1.4826*median_absolute_deviation(x, nan_policy='omit')
+            madstd = lambda x: 1.4826*median_abs_deviation(x, nan_policy='omit')
             ax.plot(self.mtpf.time.value, colExpRemoved, '*b', label='Column Residual; madstd={:.3f}'.format(madstd(colExpRemoved)))
             ax.plot(self.mtpf.time.value, rowExpRemoved, '*c', label='Row Residual; madstd={:.3f}'.format(madstd(rowExpRemoved)))
             # Set plot limits to ignore excursions
@@ -620,6 +582,7 @@ class Centroids:
           # ax.set_title('Periodram of Residual Motion')
 
         return colExpRemoved, rowExpRemoved
+
 
     #*************************************************************************************************************
     def compare_JPL_to_computed_centroids(self, raDec2PixDataPath=None, plot_figure=False, include_DVA=True):
@@ -754,6 +717,41 @@ class Centroids:
 
         return summary_stats, diff_arrays
     
+    #*************************************************************************************************************
+    def compute_centroid_proper_motion(centroids):
+        """ This will compute the proper motion of the tartet centroids.
+ 
+        It simply computes the average motion as distance per time in units of pixels per day
+ 
+        Parameters
+        ----------
+        centroids : MovingCentroids class
+            col         : [np.array]
+                Column centroids in pixels
+            row         : [np.array]
+                Row centroids in pixels
+            time  : astropy.time.core.Time
+                Timestamps in BTJD
+ 
+        Returns
+        -------
+        avg_col_motion : float
+            pixels per day
+        avg_row_motion : float
+            pixels per day
+        """
+ 
+        # Column proper motion
+        colDiff = np.diff(centroids.col)
+        timeDiff = np.diff(time.value)
+        avg_col_motion = np.abs(np.nanmedian(colDiff / timeDiff))
+ 
+        # Row proper motion
+        rowDiff = np.diff(centroids.row)
+        avg_row_motion = np.abs(np.nanmedian(rowDiff / timeDiff))
+ 
+        return avg_col_motion, avg_row_motion
+
 
 #*************************************************************************************************************
 # Define the elemental process for each process in the compute_centroids_dynamic_aperture pool
@@ -766,6 +764,9 @@ def _single_cadence_dynamic_aperture (mtpf, aper_mask_threshold, method, idx, ca
 #*************************************************************************************************************
 def _remove_expected_trend_elemental(centroid, exp_trend, subtract_mean=True):
     """ Removes the expected motion trend from the centroids
+
+    This is experimental but right now all it does is subtract off the expected trend from the centroids. Other code is
+    commented out.
 
     Parameters
     ----------
@@ -862,7 +863,7 @@ def _detrend_centroids_elemental(centroids, time, cadenceno, polyorderRange, sig
     # sigma = 1.4826 * mad(x)
     # Median normalize then find outliers
     diffsNorm = (diffs / np.median(diffs)) - 1
-    colSigma = 1.4826*median_absolute_deviation(diffsNorm)
+    colSigma = 1.4826*median_abs_deviation(diffsNorm)
     threshold = colSigma*sigmaThreshold
     # We want the cadence after the big difference jump (so add 1)
     break_point = np.nonzero(np.abs(diffsNorm) >= threshold)[0] + 1
@@ -895,7 +896,7 @@ def _detrend_centroids_elemental(centroids, time, cadenceno, polyorderRange, sig
 
 #*************************************************************************************************************
 def _find_best_polyfit(x, y, polyorderRange):
-    """ Finds the best polyorder to minimise RMS with the <polyOrderRange>
+    """ Finds the best polyorder to minimize RMS with the <polyOrderRange>
 
     Helper function for detrend_centroids 
 
@@ -932,15 +933,6 @@ def _find_best_polyfit(x, y, polyorderRange):
 
     return best_polyFitCurve, best_polyorder
     
-
-#*************************************************************************************************************
-def plot_centroids_2D (centroids):
-    """ Plots the centroids in 2D pixel space
-    """
-
-    plt.plot(centroids.col, centroids.row, '-*b')
-
-    return
 
 #*************************************************************************************************************
 def plot_peaks_in_centroid_motion(fits_files, maximum_period=2):
@@ -1042,7 +1034,7 @@ def find_peaks_in_centroid_motion(mtpf, centroids, maximum_period=2):
     ----------
     mtpf : lightkurve.targetpixelfile.MovingTargetPixelFile
             The moving target pixel file to use
-    centroids : list of astrometry.Centroids class
+    centroids : list of astrometry.MovingCentroids class
     maximum_period : float
         The maximum perido in days to consider (I.e. to ignore long term trends)
 
@@ -1064,349 +1056,6 @@ def find_peaks_in_centroid_motion(mtpf, centroids, maximum_period=2):
 
     return col_peak_period, row_peak_period
 
-#*************************************************************************************************************
-def compute_centroid_proper_motion(centroids, time):
-    """ This will compute the proper motion of the tartet centroids.
-
-    It simply computes the average motion as distance per time in units of pixels per day
-
-    Parameters
-    ----------
-    centroids : np.array list
-        The 1 dimensional centroids time series
-    time    : astropy.time.core.Time
-        Cadences times corresponding to <centroids>
-
-    Returns
-    -------
-    avg_col_motion : float
-        pixels per day
-    avg_row_motion : float
-        pixels per day
-    """
-
-    # Column proper motion
-    colDiff = np.diff(centroids.col)
-    timeDiff = np.diff(time.value)
-    avg_col_motion = np.abs(np.nanmedian(colDiff / timeDiff))
-
-    # Row proper motion
-    rowDiff = np.diff(centroids.row)
-    avg_row_motion = np.abs(np.nanmedian(rowDiff / timeDiff))
-
-    return avg_col_motion, avg_row_motion
-
 
 #*************************************************************************************************************
-
-class MovingTargetPixelFile(TessTargetPixelFile):
-    """ This is a modified TessTargetPixelFile for custom methods for moving asteroid astrometry
-
-    """
-
-    
-    def __init__(self, path, quality_bitmask="default", **kwargs):
-        """ See the TargetPixelFile __init__ for arguments
-        """
-
-        # Call the TargetPixelFile Constructor
-        super(MovingTargetPixelFile, self).__init__(path, quality_bitmask=quality_bitmask, **kwargs)
-
-        # The target ID 
-        self.targetid = path[0].header['TARGET']
-
-    @property
-    def camera(self):
-        """ The camera is an array """
-        return self.hdu[1].data['CAMERA'][self.quality_mask]
-
-    @property
-    def ccd(self):
-        """ The ccd is an array """
-        return self.hdu[1].data['CCD'][self.quality_mask]
-
-    def __repr__(self):
-        return "MovingTargetPixelFile(Target ID: {})".format(self.targetid)
-
-    @property
-    def instrument_time(self):
-        """ The target pixel files are barycenter corrected. This method will remove that correction using 
-        the TIMECORR column in the FITs file.
-        """
-
-        return self.time - self.hdu[1].data['TIMECORR'][self.quality_mask]
-
-
-    def animate(self, step: int = None, interval: int = 200, save_file=None, fps=30, **plot_args):
-        """Displays an interactive HTML matplotlib animation.
-
-        This feature requires a Jupyter notebook environment to display correctly.
-
-        Parameters
-        ----------
-        step : int
-            Spacing between frames.  By default, the spacing will be determined such that
-            50 frames are shown, i.e. `step = len(tpf) // 50`.  Showing more than 50 frames
-            will be slow on many systems.
-        interval : int
-            Delay between frames in milliseconds.
-        save_file : str
-            Name of file to save, None to not save file
-        **plot_args : dict
-            Optional parameters passed to tpf.plot().
-        """
-        try:
-            # To make installing Lightkurve easier, ipython is an optional dependency,
-            # because we can assume it is installed when notebook-specific features are called
-            from IPython.display import HTML
-            return HTML(self._to_matplotlib_animation(step=step, interval=interval, 
-                save_file=save_file, fps=fps, **plot_args).to_jshtml())
-        except ModuleNotFoundError:
-            log.error("ipython needs to be installed for animate() to work (e.g., `pip install ipython`)")
-
-
-    def _to_matplotlib_animation(
-        self, step: int = None, interval: int = 200, centroid=None, aperture_mask=None, save_file=None, fps=30, **plot_args
-    ) -> "matplotlib.animation.FuncAnimation":
-        """Returns a `matplotlib.animation.FuncAnimation` object.
-
-        The animation shows the flux values over time by calling `tpf.plot()` for multiple frames.
-
-        Parameters
-        ----------
-        step : int
-            Spacing between frames.  By default, the spacing will be determined such that
-            50 frames are shown, i.e. `step = len(tpf) // 50`.  Showing more than 50 frames
-            will be slow on many systems.
-        interval : int
-            Delay between frames in milliseconds.
-        column : str
-            Column in TPF to plot
-        centroid : float np.array(nCadences,2)
-            Centroid data to plot overlaid on the pixel data
-            Be sure to plot relative pixels (CCD_ref=False)
-        aperture_mask : ndarray(nCadences, cols, rows)
-            Highlight pixels selected by aperture_mask.
-        save_file : str
-            Name of file to save, None to not save file
-        fps : int
-            Frames per second when saving file
-        **plot_args : dict
-            Optional parameters passed to tpf.plot().
-        """
-        if step is None:
-            step = len(self) // 50
-            if step < 1:
-                step = 1
-
-        column = plot_args.get("column", "FLUX")
-        ax = self.plot(**plot_args)
-        if centroid is not None:
-            sct = ax.scatter(centroid[step, 0], centroid[step, 1], c='k')
-
-        def add_aper(aperture_mask_single, ax):
-            mask_color="red"
-            aperture_mask_single = self._parse_aperture_mask(aperture_mask_single)
-            # Remove any current patches to reset the aperture mask in the animation
-            if ax.patches != []:
-                ax.patches = []
-            for i in range(self.shape[1]):
-                for j in range(self.shape[2]):
-                    if aperture_mask_single[i, j]:
-                        rect = patches.Rectangle(
-                            xy=(j + self.column - 0.5, i + self.row - 0.5),
-                            width=1,
-                            height=1,
-                            color=mask_color,
-                            fill=False,
-                            hatch="//",
-                        )
-                        ax.add_patch(rect)
-
-    
-        if aperture_mask is not None:
-            add_aper(aperture_mask[step,:,:], ax)
-
-
-        def init():
-            return ax.images
-
-        def animate(i):
-            frame = i * step
-            ax.images[0].set_data(self.hdu[1].data[column][self.quality_mask][frame])
-            # Rescale the color range for each frame
-            ax.images[0].set_clim(np.min(self.hdu[1].data[column][self.quality_mask][frame]), 
-                    np.max(self.hdu[1].data[column][self.quality_mask][frame]))
-            if centroid is not None:
-                sct.set_offsets(np.array([centroid[frame, 0], centroid[frame, 1]]))
-            if aperture_mask is not None:
-                add_aper(aperture_mask[frame,:,:], ax)
-            ax.set_title(f"Frame {frame}")
-           #return [ax.images, sct]
-            return
-
-        plt.close(ax.figure)  # prevent figure from showing up in interactive mode
-
-        # `blit=True` means only re-draw the parts that have changed.
-        frames = len(self) // step
-        anim = matplotlib.animation.FuncAnimation(
-            ax.figure,
-            animate,
-            init_func=init,
-            frames=frames,
-            interval=interval,
-            blit=False,
-        )
-
-        if (save_file is not None):
-            anim.save(save_file, writer='imagemagick', fps=fps)
-
-        return anim
-
-    def estimate_centroids_one_cadence(self, cadenceno, aperture_mask="default", method="moments"):
-        """ Computes the centroid for a single cadence
-
-        See estimate_centroids for details of methods used.
-
-        Parameters
-        ----------
-        cadenceno : int
-            Cadence index to compute centroid for
-        aperture_mask : 'pipeline', 'threshold', 'all', 'default', or array-like
-            Which pixels contain the object to be measured, i.e. which pixels
-            should be used in the estimation?  If None or 'all' are passed,
-            all pixels in the pixel file will be used.
-            If 'pipeline' is passed, the mask suggested by the official pipeline
-            will be returned.
-            If 'threshold' is passed, all pixels brighter than 3-sigma above
-            the median flux will be used.
-            If 'default' is passed, 'pipeline' mask will be used when available,
-            with 'threshold' as the fallback.
-            Alternatively, users can pass a boolean array describing the
-            aperture mask such that `True` means that the pixel will be used.
-        method : 'moments' or 'quadratic'
-            Defines which method to use to estimate the centroids. 'moments'
-            computes the centroid based on the sample moments of the data.
-            'quadratic' fits a 2D polynomial to the data and returns the
-            coordinate of the peak of that polynomial.
-
-        Returns
-        -------
-        column, row : `~astropy.units.Quantity`, `~astropy.units.Quantity`
-            Floats containing the column and row positions for the centroid
-            on the specified cadence, or NaN for where the estimation failed.
-        
-        """
-        method = validate_method(method, ["moments", "quadratic"])
-        if method == "moments":
-            return self._estimate_centroids_via_moments_one_cadence(cadenceno, aperture_mask=aperture_mask)
-        elif method == "quadratic":
-            return self._estimate_centroids_via_quadratic_one_cadence(cadenceno, aperture_mask=aperture_mask)
-
-    def _estimate_centroids_via_moments_one_cadence(self, cadenceno, aperture_mask):
-        """Compute the "center of mass" of the light based on the 2D moments;
-        this is a helper method for `estimate_centroids_one_cadence()`."""
-        aperture_mask = self._parse_aperture_mask(aperture_mask)
-      # yy, xx = np.indices(self.shape[1:]) + 0.5
-        yy, xx = np.indices(self.shape[1:])
-        yy = self.row + yy
-        xx = self.column + xx
-        cadence_idx = np.nonzero(np.in1d(self.cadenceno, cadenceno))[0]
-        total_flux = np.nansum(self.flux[cadence_idx, aperture_mask])
-        with warnings.catch_warnings():
-            # RuntimeWarnings may occur below if total_flux contains zeros
-            warnings.simplefilter("ignore", RuntimeWarning)
-            col_centr = (
-                    np.nansum(xx * aperture_mask * self.flux[cadence_idx, :,:], axis=(1, 2)) / total_flux
-            )
-            row_centr = (
-                np.nansum(yy * aperture_mask * self.flux[cadence_idx, :,:], axis=(1, 2)) / total_flux
-            )
-        return col_centr * u.pixel, row_centr * u.pixel
-
-    def _estimate_centroids_via_quadratic_one_cadence(self, cadenceno, aperture_mask):
-        """Estimate centroids by fitting a 2D quadratic to the brightest pixels;
-        this is a helper method for `estimate_centroids_one_cadence()`."""
-        aperture_mask = self._parse_aperture_mask(aperture_mask)
-        col_centr, row_centr = [], []
-        cadence_idx = np.nonzero(np.in1d(self.cadenceno, cadenceno))[0]
-        col, row = centroid_quadratic(self.flux[cadence_idx], mask=aperture_mask)
-        col_centr.append(col)
-        row_centr.append(row)
-      # # Finally, we add .5 to the result bellow because the convention is that
-      # # pixels are centered at .5, 1.5, 2.5, ...
-      # col_centr = np.asfarray(col_centr) + self.column + 0.5
-      # row_centr = np.asfarray(row_centr) + self.row + 0.5
-        col_centr = np.asfarray(col_centr) + self.column
-        row_centr = np.asfarray(row_centr) + self.row
-        col_centr = Quantity(col_centr, unit="pixel")
-        row_centr = Quantity(row_centr, unit="pixel")
-        return col_centr, row_centr
-
-    def create_threshold_mask_one_cadence(self, cadenceno, threshold=3, reference_pixel="center"):
-        """Returns an aperture mask creating using the thresholding method.
-
-        Compute for only the single cadence selected.
-
-        This method will identify the pixels in the TargetPixelFile which show
-        a median flux that is brighter than `threshold` times the standard
-        deviation above the flux values. The standard deviation is estimated
-        in a robust way by multiplying the Median Absolute Deviation (MAD)
-        with 1.4826.
-
-        If the thresholding method yields multiple contiguous regions, then
-        only the region closest to the (col, row) coordinate specified by
-        `reference_pixel` is returned.  For exmaple, `reference_pixel=(0, 0)`
-        will pick the region closest to the bottom left corner.
-        By default, the region closest to the center of the mask will be
-        returned. If `reference_pixel=None` then all regions will be returned.
-
-        Parameters
-        ----------
-        cadenceno : int
-            Cadence index to compute threshold mask for
-        threshold : float
-            A value for the number of sigma by which a pixel needs to be
-            brighter than the median flux to be included in the aperture mask.
-        reference_pixel: (int, int) tuple, 'center', or None
-            (col, row) pixel coordinate closest to the desired region.
-            For example, use `reference_pixel=(0,0)` to select the region
-            closest to the bottom left corner of the target pixel file.
-            If 'center' (default) then the region closest to the center pixel
-            will be selected. If `None` then all regions will be selected.
-
-        Returns
-        -------
-        aperture_mask : ndarray
-            2D boolean numpy array containing `True` for pixels above the
-            threshold.
-        """
-        if reference_pixel == "center":
-            reference_pixel = (self.shape[2] / 2, self.shape[1] / 2)
-        # Find the requested cadence index
-        cadence_idx = np.nonzero(np.in1d(self.cadenceno, cadenceno))[0]
-        image = np.array(self.flux[cadence_idx])[0]
-        vals = image[np.isfinite(image)].flatten()
-        # Calculate the theshold value in flux units
-        mad_cut = (1.4826 * median_absolute_deviation(vals) * threshold) + np.nanmedian(image)
-        # Create a mask containing the pixels above the threshold flux
-        threshold_mask = np.nan_to_num(image) >= mad_cut
-        if (reference_pixel is None) or (not threshold_mask.any()):
-            # return all regions above threshold
-            return threshold_mask
-        else:
-            # Return only the contiguous region closest to `region`.
-            # First, label all the regions:
-            labels = label(threshold_mask)[0]
-            # For all pixels above threshold, compute distance to reference pixel:
-            label_args = np.argwhere(labels > 0)
-            distances = [
-                np.hypot(crd[0], crd[1])
-                for crd in label_args
-                - np.array([reference_pixel[1], reference_pixel[0]])
-            ]
-            # Which label corresponds to the closest pixel?
-            closest_arg = label_args[np.argmin(distances)]
-            closest_label = labels[closest_arg[0], closest_arg[1]]
-            return labels == closest_label
 
