@@ -6,9 +6,9 @@ tess-astrometry
 
 This package contains two modules: 
 
-* `MovingTargetPixelFiles` -- Generates a moving TargetPixelFile (mtpf) object for use with the output of
-  `tess_cloud.asteroid_pipeline <https://github.com/SSDataLab/tess-cloud>`_ FITs files. 
-* `astrometry` -- Tools to measure the centroids of the moving target pisel files and compare them to the expected
+* `MovingTargetPixelFile` -- Generates a moving TargetPixelFile (mtpf) object for use with the FITs file output of
+  `tess_cloud.asteroid_pipeline <https://github.com/SSDataLab/tess-cloud>`_. 
+* `astrometry` -- Tools to measure the centroids of the moving target pixel files and compare them to the expected
   astrometry given by JPL Horizons.
 
 
@@ -24,15 +24,14 @@ To read in a mtpf FITS file:
     >>>f = fits.open(file_path)
     >>>mtpf = ast.MovingTargetPixelFile(f, quality_bitmask="hardest")
 
-the `mtfp` inherents `lightkurve.TargetPixelFile` but adds functionality specific to moving objects.
+the `mtfp` inherents `lightkurve.TargetPixelFile` and adds functionality specific to moving objects.
 
 Measuring centroids is via use of the `MovingCentroids` class. There are two methods to compute the centroids:
 
-#. `compute_centroids_simple_aperture` -- Uses a static aperture for all cadences based on the median image over all
-   cadences
-#. `compute_centroids_dynamic_aperture` -- Uses a dynamic aperture where a new aperture is computed for each cadence
+#. `compute_centroids_simple_aperture` -- Uses a static aperture for all cadences based on the median image
+#. `compute_centroids_dynamic_aperture` -- Uses a dynamic aperture where a unique aperture is computed for each cadence
 
-You can then generate an animation of the computed centroids as the below example will demonstrate: 
+You can then generate an animation of the computed centroids: 
 
 .. code-block:: python
 
@@ -45,8 +44,10 @@ You can then generate an animation of the computed centroids as the below exampl
 ..
     .. image:: https://raw.githubusercontent.com/lightkurve/lightkurve/main/docs/source/_static/images/lightkurve-teaser.gif
 
-.. image:: https://raw.githubusercontent.com/jcsmithhere/tess-astrometry/main/docs/images/tgt_49016_dynamic_aperture_example_short.gif
+..
+.. image:: https://raw.githubusercontent.com/jcsmithhere/tess-astrometry/main/docs/images/tgt_49016_dynamic_aperture_example_short.gif?token=ABOQ3LILETTSYBFSKDRBVMTBASUWG
 
+.. image:: https://raw.githubusercontent.com/jcsmithhere/tess-astrometry/main/docs/images/tgt_49016_dynamic_aperture_example_short.gif
 
 You can also compare the measured astrometry to that given by JPL Horizons:
 
