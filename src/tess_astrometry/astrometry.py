@@ -19,7 +19,7 @@ import pandas as pd
 from matplotlib import patches, animation
 #import multiprocessing as mp
 
-from MovingTargetPixelFile import MovingTargetPixelFile
+from tess_astrometry.MovingTargetPixelFile import MovingTargetPixelFile
 
 
 #*************************************************************************************************************
@@ -103,6 +103,10 @@ class MovingCentroids:
         """ The instrument time given by the mtpf"""
 
         return self.mtpf.instrument_time
+    
+    @property
+    def targetid(self):
+        return self.mtpf.targetid
 
     #*************************************************************************************************************
     def download_expected_motion(self, aberrate : bool = False, use_mtpf_stored : bool = False):
@@ -550,7 +554,7 @@ class MovingCentroids:
             ax.plot(self.mtpf.time.value, self.row, '*c', label='Row Centroids')
             ax.plot(self.mtpf.time.value, self.expected_row, '-m', label='Row Expected')
             plt.legend()
-            plt.title(extra_title + 'Measured Astrometry vs. JPL Horizons Expected')
+            plt.title(extra_title + ' Measured Astrometry vs. JPL Horizons Expected')
             plt.grid()
         
             # Final Residual
@@ -1058,4 +1062,5 @@ def find_peaks_in_centroid_motion(mtpf, centroids, maximum_period=2):
 
 
 #*************************************************************************************************************
+
 
