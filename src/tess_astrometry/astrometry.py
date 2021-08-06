@@ -58,6 +58,12 @@ class MovingCentroids:
         If column and row centroid data in pixels is in object
     raDecDataAvailable : bool
         If RA and Decl. centroid data in degrees is in object
+    self.avg_col_motion : float
+        column proper motion in pixels per day
+    self.avg_row_motion : float
+        row proper motion in pixels per day
+    self.avg_motion : float
+        total proper motion in pixels per day
     """
 
     centroid_type_options = ('colRowData', 'raDecData')
@@ -722,39 +728,43 @@ class MovingCentroids:
         return summary_stats, diff_arrays
     
     #*************************************************************************************************************
-    def compute_centroid_proper_motion(centroids):
-        """ This will compute the proper motion of the tartet centroids.
+    def compute_centroid_proper_motion(self):
+        """ This will compute the proper motion of the target centroids.
  
         It simply computes the average motion as distance per time in units of pixels per day
  
         Parameters
         ----------
-        centroids : MovingCentroids class
-            col         : [np.array]
-                Column centroids in pixels
-            row         : [np.array]
-                Row centroids in pixels
-            time  : astropy.time.core.Time
-                Timestamps in BTJD
+        self.col         : [np.array]
+            Column centroids in pixels
+        self.row         : [np.array]
+            Row centroids in pixels
+        self.time  : astropy.time.core.Time
+            Timestamps in BTJD
  
         Returns
         -------
-        avg_col_motion : float
-            pixels per day
-        avg_row_motion : float
-            pixels per day
+        self.avg_col_motion : float
+            column proper motion in pixels per day
+        self.avg_row_motion : float
+            row proper motion in pixels per day
+        self.avg_motion : float
+            total proper motion in pixels per day
         """
  
         # Column proper motion
-        colDiff = np.diff(centroids.col)
-        timeDiff = np.diff(time.value)
-        avg_col_motion = np.abs(np.nanmedian(colDiff / timeDiff))
+        colDiff = np.diff(self.col)
+        timeDiff = np.diff(self.time.value) * u.second
+        self.avg_col_motion = np.abs(np.nanmedian(colDiff / timeDiff))
  
         # Row proper motion
-        rowDiff = np.diff(centroids.row)
-        avg_row_motion = np.abs(np.nanmedian(rowDiff / timeDiff))
+        rowDiff = np.diff(self.row)
+        self.avg_row_motion = np.abs(np.nanmedian(rowDiff / timeDiff))
+
+        # Total proper motion, just the quadratic mean of the row and col motions
+        self.avg_motion = np.sqrt(self.avg_col_motion**2 + self.avg_row_motion**2)
  
-        return avg_col_motion, avg_row_motion
+        return
 
 
 #*************************************************************************************************************

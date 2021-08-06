@@ -41,15 +41,6 @@ You can then generate an animation of the computed centroids:
     >>>centroidsMatrix = centroids.compute_centroids_dynamic_aperture(aper_mask_threshold=3)
     >>>centroids.mtpf.animate(aperture_mask=centroids.aper, centroidsMatrix=centroidsMatrix, fps=2, step=1)
 
-..
-    .. image:: https://raw.githubusercontent.com/lightkurve/lightkurve/main/docs/source/_static/images/lightkurve-teaser.gif
-
-..
-    .. image:: https://raw.githubusercontent.com/jcsmithhere/tess-astrometry/main/docs/images/tgt_49016_dynamic_aperture_example_short.gif?token=ABOQ3LILETTSYBFSKDRBVMTBASUWG
-
-..
-    .. image:: https://raw.githubusercontent.com/jcsmithhere/tess-astrometry/main/docs/images/tgt_49016_dynamic_aperture_example_short.gif
-
 .. image:: https://github.com/jcsmithhere/tess-astrometry/raw/main/docs/images/tgt_49016_dynamic_aperture_example_short.gif
 
 You can also compare the measured astrometry to that given by JPL Horizons:
@@ -57,9 +48,6 @@ You can also compare the measured astrometry to that given by JPL Horizons:
 .. code-block:: python
 
     >>>centroids.detrend_centroids_expected_trend(plot=True, extra_title='Target {}'.format(centroids.targetid));
-
-..
-    .. image:: https://raw.githubusercontent.com/jcsmithhere/tess-astrometry/main/docs/images/example_compare_with_JPL.png
 
 .. image:: https://github.com/jcsmithhere/tess-astrometry/raw/main/docs/images/example_compare_with_JPL.png
     
