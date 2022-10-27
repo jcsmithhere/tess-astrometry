@@ -11,6 +11,7 @@ from matplotlib import patches, animation
 
 from lightkurve.utils import validate_method
 from lightkurve.targetpixelfile import TessTargetPixelFile
+from lightkurve.lightcurve import LightCurve, TessLightCurve
 
 class MovingTargetPixelFile(TessTargetPixelFile):
     """ This is a modified TessTargetPixelFile for custom methods for moving asteroid astrometry
@@ -141,8 +142,12 @@ class MovingTargetPixelFile(TessTargetPixelFile):
             mask_color="red"
             aperture_mask_single = self._parse_aperture_mask(aperture_mask_single)
             # Remove any current patches to reset the aperture mask in the animation
-            if ax.patches != []:
-                ax.patches = []
+          # if ax.patches != []:
+          #     ax.patches = []
+            if len(ax.patches) > 0:
+                for patch in ax.patches:
+                    ax.patches.pop()
+                ax.figure.canvas.draw()
             for i in range(self.shape[1]):
                 for j in range(self.shape[2]):
                     if aperture_mask_single[i, j]:
@@ -334,5 +339,125 @@ class MovingTargetPixelFile(TessTargetPixelFile):
             closest_arg = label_args[np.argmin(distances)]
             closest_label = labels[closest_arg[0], closest_arg[1]]
             return labels == closest_label
+
+    def extract_dynamic_aperture_photometry(
+        self, aperture_mask=None, flux_method="sum", centroid_matrix=None
+    ):
+        """Returns a LightCurve obtained using aperture photometry using a different aperture for each cadence.
+
+        Parameters
+        ----------
+        aperture_mask : array-like
+            A boolean array of shape (n_cadences, col_pixels, row_pixels) describing the aperture such that `True` means
+            that the pixel will be used. n_cadences must be the same length as cadences in the mtpf
+        flux_method: 'sum', 'median', or 'mean'
+            Determines how the pixel values within the aperture mask are combined
+            at each cadence. Defaults to 'sum'.
+        centroid_matrix : float np.array(nCadences,2)
+            from MovingCentroids.compute_centroids_dynamic_aperture
+
+        Returns
+        -------
+        lc : TessLightCurve object
+            Contains the summed flux within the aperture for each cadence.
+        """
+
+        assert aperture_mask is not None, 'aperture_mask must be passed'
+
+        flux, flux_err = self._dynamic_aperture_photometry(
+            aperture_mask=aperture_mask,
+            flux_method=flux_method,
+        )
+        keys = {
+                "centroid_col": centroid_matrix[:,0],
+            "centroid_row": centroid_matrix[:,1],
+            "quality": self.quality,
+            "sector": self.sector,
+            "camera": self.camera,
+            "ccd": self.ccd,
+            "mission": self.mission,
+            "cadenceno": self.cadenceno,
+            "ra": self.ra,
+            "dec": self.dec,
+            "label": self.get_keyword("OBJECT", default=self.targetid),
+            "targetid": self.targetid,
+        }
+        meta = {"APERTURE_MASK": aperture_mask}
+        return TessLightCurve(
+            time=self.time, flux=flux, flux_err=flux_err, **keys, meta=meta
+        )
+
+    def _dynamic_aperture_photometry(
+        self, aperture_mask, flux_method="sum"
+    ):
+        """Helper method for ``extract_aperture photometry``.
+
+        Returns
+        -------
+        flux, flux_err
+        """
+
+        # Aperture mask shoudl be booleans, not integers
+        aperture_mask = aperture_mask.astype(bool)
+
+        # Estimate flux
+        flux = u.Quantity(np.full(self.flux[:,0,0].shape, np.nan), unit="electron/s")
+        if flux_method == "sum":
+            for idx in np.arange(len(self.cadenceno)):
+                flux[idx] = np.nansum(self.flux[idx, aperture_mask[idx,:,:]])
+
+        elif flux_method == "median":
+            for idx in np.arange(len(self.cadenceno)):
+                flux[idx] = np.nanmedian(self.flux[idx, aperture_mask[idx,:,:]])
+
+        elif flux_method == "mean":
+            for idx in np.arange(len(self.cadenceno)):
+                flux[idx] = np.nanmean(self.flux[idx, aperture_mask[idx,:,:]])
+        else:
+            raise ValueError("`flux_method` must be one of 'sum', 'median', or 'mean'.")
+
+        # We use ``np.nansum`` above to be robust against a subset of pixels
+        # being NaN, however if *all* pixels are NaN, we propagate a NaN.
+        is_allnan = np.full(len(flux), False)
+        for idx in np.arange(len(flux)):
+            is_allnan[idx] = ~np.any(np.isfinite(self.flux[idx, aperture_mask[idx,:,:]]))
+        flux[is_allnan] = np.nan
+
+        # Similarly, if *all* pixel values across the TPF are exactly zero,
+        # we propagate NaN (cf. #873 for an example of this happening)
+        is_allzero = np.all(self.flux == 0, axis=(1, 2))
+        flux[is_allzero] = np.nan
+
+        # Estimate flux_err
+        with warnings.catch_warnings():
+            # Ignore warnings due to negative errors
+            warnings.simplefilter("ignore", RuntimeWarning)
+            flux_err = u.Quantity(np.full(self.flux_err[:,0,0].shape, np.nan), unit="electron/s")
+            if flux_method == "sum":
+                for idx in np.arange(len(self.cadenceno)):
+                    flux_err[idx] = np.nansum(self.flux_err[idx, aperture_mask[idx,:,:]] ** 2.0) ** 0.5
+
+            elif flux_method == "median":
+                #TODO: Do we really take a median in quadrature here?!?!
+                # This si what the original _aperture_photometry code in targetpixelfile.py does but doesn't seem right
+                # to me. Probably doesn't matter since we'll never use median or mean.
+                for idx in np.arange(len(self.cadenceno)):
+                    flux_err[idx] = np.nanmedian(self.flux_err[idx, aperture_mask[idx,:,:]] ** 2.0) ** 0.5
+
+            elif flux_method == "mean":
+                for idx in np.arange(len(self.cadenceno)):
+                    flux_err[idx] = np.nanmean(self.flux_err[idx, aperture_mask[idx,:,:]] ** 2.0) ** 0.5
+
+            is_allnan = np.full(len(flux), False)
+            for idx in np.arange(len(flux)):
+                is_allnan[idx] = ~np.any(np.isfinite(self.flux_err[idx, aperture_mask[idx,:,:]]))
+            flux_err[is_allnan] = np.nan
+
+        if self.get_header(1).get("TUNIT5") == "e-/s":
+            flux = u.Quantity(flux, unit="electron/s")
+        if self.get_header(1).get("TUNIT6") == "e-/s":
+            flux_err = u.Quantity(flux_err, unit="electron/s")
+
+        return flux, flux_err
 
 

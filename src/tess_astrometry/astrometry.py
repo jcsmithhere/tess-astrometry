@@ -211,13 +211,18 @@ class MovingCentroids:
 
     #*************************************************************************************************************
     def compute_centroids_dynamic_aperture(self, method='moments', CCD_ref=True,
-            aper_mask_threshold=3.0, n_cores=None):
+            aper_mask_threshold=3.0, expected_trend_pixel_err=-1):
         """ Compute the centroid of a moving target pixel file using a dynamic aperture.
         
-            This method will optimize the aperture on each cadence to minimize the sawtooth pattern due to a moving object.
+        This method will optimize the aperture on each cadence to minimize the sawtooth pattern due to a moving object.
+        
+        If expected_trend_pixel_err is greater than zero then the computed centroid is compared to the JPL Horizons
+        expected trend. If the centroid is greater the pixel error away for the expected centroid then the cadence is gapped.
+        The apertire is also set to zero (self.aper).
+        This supposes that the error is due to a background object contaminating the centroiding.
 
-            Computing the centroid on each cadence is an independent process so this function is ripe for asyncronous
-            multiprocessing. TODO: figure out how to get this parallel processed given we are using a mtpf class.
+        Computing the centroid on each cadence is an independent process so this function is ripe for asyncronous
+        multiprocessing. TODO: figure out how to get this parallel processed given we are using a mtpf class.
         
         Parameters
         ----------
@@ -228,8 +233,9 @@ class MovingCentroids:
         aper_mask_threshold : float
             A value for the number of sigma by which a pixel needs to be
             brighter than the median flux to be included in the aperture mask.
-        n_cores : int
-            Number of multiprocessing cores to use. None means use all.
+        expected_trend_pixel_err : float
+            If > 0.0 then use this piel error value when determining if the centroid is too far off from expected and
+            then gap the cadence.
 
         Returns
         -------
@@ -240,6 +246,8 @@ class MovingCentroids:
         self.row : array of row centroids
         self.col : array of column centroids
         self.colRowDataAvailable = True
+        self.aper : ndarray(nCadences, cols, rows)
+            The determined aperture per cadence
 
         """
 
@@ -262,7 +270,7 @@ class MovingCentroids:
       #     rows.append(row)
 
       # #***
-        
+
 
         # Compute the aperture for each cadence seperately
         # TODO: This is ripe for parallelization. Figure out how to do that within a class object
@@ -285,6 +293,28 @@ class MovingCentroids:
         self.col = cols
         self.row = rows
 
+        # If desired, compare to the expected centroids and see if the error is too much
+        if expected_trend_pixel_err > 0.0:
+            # The JPL Horizons expected astrometry
+            self.download_expected_motion(aberrate=False)
+            rowExpRemoved = _remove_expected_trend_elemental(self.row, self.expected_row)
+            colExpRemoved = _remove_expected_trend_elemental(self.col, self.expected_col)
+
+            # Remove the secular offset, this is assumed to be the error in the expected location
+            colExpRemoved -= np.nanmedian(colExpRemoved)
+            rowExpRemoved -= np.nanmedian(rowExpRemoved)
+
+            # Measure the difference between the measured and expected centroids
+            centroid_err = np.sqrt(rowExpRemoved**2 + colExpRemoved**2)
+
+            # Gap where the error is greater than expected_trend_pixel_err
+            gap_here = np.nonzero(centroid_err > expected_trend_pixel_err)[0]
+            self.col[gap_here] = np.nan
+            self.row[gap_here] = np.nan
+            centroidsMatrix[gap_here,:] = np.nan
+            self.aper[gap_here,:,:] = False
+
+        
         self.colRowDataAvailable = True
         
         return centroidsMatrix
@@ -530,7 +560,7 @@ class MovingCentroids:
     
 
     #*************************************************************************************************************
-    def detrend_centroids_expected_trend(self, include_DVA=False, extra_title="", plot=False):
+    def detrend_centroids_expected_trend(self, include_DVA=False, extra_title="", plot=False, plot_vs_frame=False):
         """ Detrends the centroids using the given the JPL Horizons expected trends
 
         Parameters
@@ -541,6 +571,9 @@ class MovingCentroids:
             Extra title to prepend to figure title
         plot : bool
             If True then generate plot
+        plot_vs_frame : bool
+            If True then the horizontal axis is the frame number index
+            If False, then the horizontal axis is BTJD
         """
  
         # The JPL Horizons expected astrometry
@@ -550,15 +583,20 @@ class MovingCentroids:
  
         if plot:
 
+            if plot_vs_frame:
+                x_values = np.arange(len(self.col))
+            else:
+                x_values = self.mtpf.time.value
+
             # Now print the results
             fig,ax = plt.subplots(1,1, figsize=(12, 10))
         
             # Initial and expected centroids
             ax = plt.subplot(2,1,1)
-            ax.plot(self.mtpf.time.value, self.col, '*b', label='Column Centroids')
-            ax.plot(self.mtpf.time.value, self.expected_col, '-m', label='Column Expected')
-            ax.plot(self.mtpf.time.value, self.row, '*c', label='Row Centroids')
-            ax.plot(self.mtpf.time.value, self.expected_row, '-m', label='Row Expected')
+            ax.plot(x_values, self.col, '*b', label='Column Centroids')
+            ax.plot(x_values, self.expected_col, '-m', label='Column Expected')
+            ax.plot(x_values, self.row, '*c', label='Row Centroids')
+            ax.plot(x_values, self.expected_row, '-m', label='Row Expected')
             plt.legend()
             plt.title(extra_title + ' Measured Astrometry vs. JPL Horizons Expected')
             plt.grid()
@@ -566,8 +604,8 @@ class MovingCentroids:
             # Final Residual
             ax = plt.subplot(2,1,2)
             madstd = lambda x: 1.4826*median_abs_deviation(x, nan_policy='omit')
-            ax.plot(self.mtpf.time.value, colExpRemoved, '*b', label='Column Residual; madstd={:.3f}'.format(madstd(colExpRemoved)))
-            ax.plot(self.mtpf.time.value, rowExpRemoved, '*c', label='Row Residual; madstd={:.3f}'.format(madstd(rowExpRemoved)))
+            ax.plot(x_values, colExpRemoved, '*b', label='Column Residual; madstd={:.3f}'.format(madstd(colExpRemoved)))
+            ax.plot(x_values, rowExpRemoved, '*c', label='Row Residual; madstd={:.3f}'.format(madstd(rowExpRemoved)))
             # Set plot limits to ignore excursions
             allYData = np.concatenate((colExpRemoved, rowExpRemoved))
           # yUpper = np.nanpercentile(allYData, 99.5)
@@ -789,12 +827,15 @@ def _remove_expected_trend_elemental(centroid, exp_trend, subtract_mean=True):
 
     Returns
     -------
-    detrended_centroid : np.array
-        The centroid with both the expected curve and the moded sawtooth removed
     centroid_exp_removed : np.array
         The centroid with just the expected curve removed
-    fittedTrend : np.array
-        The Fit to the moded trend
+
+
+
+    #detrended_centroid : np.array
+    #    The centroid with both the expected curve and the moded sawtooth removed
+    #fittedTrend : np.array
+    #    The Fit to the moded trend
 
     """
 
